@@ -488,6 +488,24 @@ OAUTH_GROUPS_CLAIM = PersistentConfig(
     os.environ.get("OAUTH_GROUP_CLAIM", "groups"),
 )
 
+FEISHU_CLIENT_ID = PersistentConfig(
+    "FEISHU_CLIENT_ID",
+    "oauth.feishu.client_id",
+    os.environ.get("FEISHU_CLIENT_ID", ""),
+)
+
+FEISHU_CLIENT_SECRET = PersistentConfig(
+    "FEISHU_CLIENT_SECRET",
+    "oauth.feishu.client_secret",
+    os.environ.get("FEISHU_CLIENT_SECRET", ""),
+)
+
+FEISHU_OAUTH_SCOPE = PersistentConfig(
+    "FEISHU_OAUTH_SCOPE",
+    "oauth.feishu.scope",
+    os.environ.get("FEISHU_OAUTH_SCOPE", "contact:user.base:readonly"),
+)
+
 ENABLE_OAUTH_ROLE_MANAGEMENT = PersistentConfig(
     "ENABLE_OAUTH_ROLE_MANAGEMENT",
     "oauth.enable_role_mapping",
@@ -678,6 +696,14 @@ def load_oauth_providers():
             "name": OAUTH_PROVIDER_NAME.value,
             "redirect_uri": OPENID_REDIRECT_URI.value,
             "register": oidc_oauth_register,
+        }
+
+    if FEISHU_CLIENT_ID.value and FEISHU_CLIENT_SECRET.value:
+        # Feishu uses custom OAuth implementation due to non-standard flow
+        # No need to register with standard OAuth client
+        OAUTH_PROVIDERS["feishu"] = {
+            "register": lambda client: None,  # No-op registration for custom handling
+            "sub_claim": "sub",  # Feishu uses 'sub' for user ID
         }
 
 

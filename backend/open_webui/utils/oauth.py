@@ -14,6 +14,8 @@ from fastapi import (
 )
 from starlette.responses import RedirectResponse
 
+from .feishu_oauth import FeishuOAuth2
+
 from open_webui.models.auths import Auths
 from open_webui.models.users import Users
 from open_webui.models.groups import Groups, GroupModel, GroupUpdateForm, GroupForm
@@ -333,7 +335,25 @@ class OAuthManager:
     async def handle_login(self, request, provider):
         if provider not in OAUTH_PROVIDERS:
             raise HTTPException(404)
-        # If the provider has a custom redirect URL, use that, otherwise automatically generate one
+
+        # Handle feishu with custom implementation
+        if provider == "feishu":
+            from open_webui.config import FEISHU_CLIENT_ID, FEISHU_CLIENT_SECRET
+
+            client_id = FEISHU_CLIENT_ID.value
+            client_secret = FEISHU_CLIENT_SECRET.value
+
+            if not client_id or not client_secret:
+                raise HTTPException(404, detail="Feishu OAuth not configured")
+
+            feishu_auth = FeishuOAuth2(client_id, client_secret)
+            redirect_uri = OAUTH_PROVIDERS[provider].get("redirect_uri") or str(
+                request.url_for("oauth_callback", provider=provider)
+            )
+            auth_url = feishu_auth.create_authorization_url(redirect_uri)
+            return RedirectResponse(url=auth_url)
+
+        # Handle standard OAuth providers
         redirect_uri = OAUTH_PROVIDERS[provider].get("redirect_uri") or request.url_for(
             "oauth_callback", provider=provider
         )
@@ -345,18 +365,66 @@ class OAuthManager:
     async def handle_callback(self, request, provider, response):
         if provider not in OAUTH_PROVIDERS:
             raise HTTPException(404)
-        client = self.get_client(provider)
-        try:
-            token = await client.authorize_access_token(request)
-        except Exception as e:
-            log.warning(f"OAuth callback error: {e}")
-            raise HTTPException(400, detail=ERROR_MESSAGES.INVALID_CRED)
-        user_data: UserInfo = token.get("userinfo")
-        if not user_data or auth_manager_config.OAUTH_EMAIL_CLAIM not in user_data:
-            user_data: UserInfo = await client.userinfo(token=token)
-        if not user_data:
-            log.warning(f"OAuth callback failed, user data is missing: {token}")
-            raise HTTPException(400, detail=ERROR_MESSAGES.INVALID_CRED)
+
+        # Handle feishu with custom implementation
+        if provider == "feishu":
+            from open_webui.config import FEISHU_CLIENT_ID, FEISHU_CLIENT_SECRET
+
+            code = request.query_params.get("code")
+            error = request.query_params.get("error")
+
+            if error or not code:
+                log.warning(f"Feishu OAuth error: {error}")
+                raise HTTPException(400, detail=error or "Missing authorization code")
+
+            client_id = FEISHU_CLIENT_ID.value
+            client_secret = FEISHU_CLIENT_SECRET.value
+
+            if not client_id or not client_secret:
+                raise HTTPException(404, detail="Feishu OAuth not configured")
+
+            feishu_auth = FeishuOAuth2(client_id, client_secret)
+            redirect_uri = OAUTH_PROVIDERS[provider].get("redirect_uri") or str(
+                request.url_for("oauth_callback", provider=provider)
+            )
+
+            try:
+                # Exchange code for access token
+                token_data = feishu_auth.fetch_access_token(code, redirect_uri)
+                access_token = token_data.get("access_token")
+                if not access_token:
+                    raise HTTPException(400, detail="Failed to get access token")
+
+                # Get user information
+                user_info = feishu_auth.get_user_info(access_token)
+                parsed_user = feishu_auth.parse_user_data(user_info)
+
+                # Map to standard OAuth format for common processing
+                user_data = {
+                    "sub": parsed_user.get("sub"),
+                    "email": parsed_user.get("email"),
+                    "name": parsed_user.get("name"),
+                    "picture": parsed_user.get("picture"),
+                }
+                # Create a mock token for compatibility
+                token = {"access_token": access_token}
+            except Exception as e:
+                log.warning(f"Feishu OAuth callback error: {e}")
+                raise HTTPException(400, detail=str(e))
+        else:
+            # Handle standard OAuth providers
+            client = self.get_client(provider)
+            try:
+                token = await client.authorize_access_token(request)
+            except Exception as e:
+                log.warning(f"OAuth callback error: {e}")
+                raise HTTPException(400, detail=ERROR_MESSAGES.INVALID_CRED)
+            user_data: UserInfo = token.get("userinfo")
+            if not user_data or auth_manager_config.OAUTH_EMAIL_CLAIM not in user_data:
+                user_data: UserInfo = await client.userinfo(token=token)
+            if not user_data:
+                log.warning(f"OAuth callback failed, user data is missing: {token}")
+                raise HTTPException(400, detail=ERROR_MESSAGES.INVALID_CRED)
 
         sub = user_data.get(OAUTH_PROVIDERS[provider].get("sub_claim", "sub"))
         if not sub:
